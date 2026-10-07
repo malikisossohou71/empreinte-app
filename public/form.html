@@ -91,9 +91,14 @@ let values = {}; // fieldId -> string | {imgObj}
 const token = new URLSearchParams(location.search).get('token');
 
 async function init(){
-  if(!token){ document.getElementById('stateMsg').textContent = "Lien invalide : aucun jeton fourni."; return; }
+  if(!token){ document.getElementById('tplName').textContent = 'Lien indisponible'; document.getElementById('stateMsg').textContent = "Lien invalide : aucun jeton fourni."; return; }
   const res = await fetch('/api/public/'+token);
-  if(!res.ok){ document.getElementById('stateMsg').textContent = "Ce lien est introuvable ou a expiré."; return; }
+  if(!res.ok){
+    const err = await res.json().catch(()=>({}));
+    document.getElementById('tplName').textContent = 'Lien indisponible';
+    document.getElementById('stateMsg').textContent = err.disabled ? err.error : "Ce lien est introuvable ou a expiré.";
+    return;
+  }
   form = await res.json();
   fetch('/api/public/'+token+'/view', { method:'POST' }); // suivi d'usage, sans bloquer l'affichage
   document.getElementById('tplName').textContent = form.template.name;
