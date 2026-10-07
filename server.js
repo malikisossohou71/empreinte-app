@@ -123,9 +123,16 @@ function regenerateApiKeyHandler(req, res, user) {
   const apiKey = auth.regenerateApiKey(user.id);
   sendJson(res, 200, { apiKey });
 }
+// Un lien est actif sauf si son propriétaire l'a explicitement désactivé. Les liens
+// créés avant l'ajout de cette fonction n'ont pas de champ "active" : ils restent actifs.
+function isLinkActive(link) { return link.active !== false; }
+const LINK_DISABLED_MSG = "Ce lien a été désactivé par son propriétaire.";
+function sendLinkDisabled(res) { return sendJson(res, 403, { error: LINK_DISABLED_MSG, disabled: true }); }
+
 function registerView(req, res, token) {
   const link = db.find('public_links', l => l.token === token);
   if (!link) return sendJson(res, 404, { error: 'Lien introuvable' });
+  if (!isLinkActive(link)) return sendLinkDisabled(res);
   db.update('public_links', link.id, { views: (link.views || 0) + 1 });
   sendJson(res, 200, { ok: true });
 }
@@ -533,14 +540,29 @@ function publishLink(req, res, templateId, user) {
   const template = db.find('templates', t => t.id === templateId);
   if (!template) return sendJson(res, 404, { error: 'Modèle introuvable' });
   if (template.ownerId !== user.id) return sendJson(res, 403, { error: 'Accès refusé' });
-  const link = { id: id(), templateId, token: crypto.randomBytes(6).toString('hex'), createdAt: new Date().toISOString() };
+  const link = { id: id(), templateId, token: crypto.randomBytes(6).toString('hex'), active: true, createdAt: new Date().toISOString() };
   db.insert('public_links', link);
   sendJson(res, 201, link);
+}
+
+// Active ou désactive un lien public (sans le supprimer : le même lien refonctionne
+// dès qu'on le réactive, avec la même adresse et les mêmes statistiques).
+async function setLinkActive(req, res, templateId, linkId, user) {
+  const template = db.find('templates', t => t.id === templateId);
+  if (!template) return sendJson(res, 404, { error: 'Modèle introuvable' });
+  if (template.ownerId !== user.id) return sendJson(res, 403, { error: 'Accès refusé' });
+  const link = db.find('public_links', l => l.id === linkId && l.templateId === templateId);
+  if (!link) return sendJson(res, 404, { error: 'Lien introuvable' });
+  const body = await readJsonBody(req);
+  if (typeof body.active !== 'boolean') return sendJson(res, 400, { error: 'Le champ "active" (true/false) est requis.' });
+  db.update('public_links', link.id, { active: body.active });
+  sendJson(res, 200, { ...link, active: body.active });
 }
 
 function getPublicForm(req, res, token) {
   const link = db.find('public_links', l => l.token === token);
   if (!link) return sendJson(res, 404, { error: 'Lien introuvable ou expiré' });
+  if (!isLinkActive(link)) return sendLinkDisabled(res);
   const template = db.find('templates', t => t.id === link.templateId);
   const fields = db.filter('template_fields', f => f.templateId === link.templateId);
   sendJson(res, 200, {
@@ -622,6 +644,7 @@ async function buildRender(templateId, fields, values, options = {}) {
 async function previewPublic(req, res, token) {
   const link = db.find('public_links', l => l.token === token);
   if (!link) return sendJson(res, 404, { error: 'Lien introuvable' });
+  if (!isLinkActive(link)) return sendLinkDisabled(res);
   const template = db.find('templates', t => t.id === link.templateId);
   const fields = db.filter('template_fields', f => f.templateId === link.templateId);
   const body = await readJsonBody(req);
@@ -651,6 +674,7 @@ async function previewPublic(req, res, token) {
 async function submitPublic(req, res, token) {
   const link = db.find('public_links', l => l.token === token);
   if (!link) return sendJson(res, 404, { error: 'Lien introuvable ou expiré' });
+  if (!isLinkActive(link)) return sendLinkDisabled(res);
   const template = db.find('templates', t => t.id === link.templateId);
   const body = await readJsonBody(req);
   const fields = db.filter('template_fields', f => f.templateId === link.templateId);
@@ -857,6 +881,7 @@ const server = http.createServer(async (req, res) => {
     if ((match = /^\/api\/templates\/([^/]+)$/.exec(p)) && m === 'DELETE') { const u = requireAuth(req, res); if (!u) return; return deleteTemplate(req, res, match[1], u); }
     if ((match = /^\/api\/templates\/([^/]+)\/fields$/.exec(p)) && m === 'PUT') { const u = requireAuth(req, res); if (!u) return; return await saveFields(req, res, match[1], u); }
     if ((match = /^\/api\/templates\/([^/]+)\/publish$/.exec(p)) && m === 'POST') { const u = requireAuth(req, res); if (!u) return; return publishLink(req, res, match[1], u); }
+    if ((match = /^\/api\/templates\/([^/]+)\/links\/([^/]+)$/.exec(p)) && m === 'PUT') { const u = requireAuth(req, res); if (!u) return; return await setLinkActive(req, res, match[1], match[2], u); }
     if ((match = /^\/api\/templates\/([^/]+)\/branding$/.exec(p)) && m === 'PUT') { const u = requireAuth(req, res); if (!u) return; return await saveBranding(req, res, match[1], u); }
     if ((match = /^\/api\/templates\/([^/]+)\/integrations$/.exec(p)) && m === 'PUT') { const u = requireAuth(req, res); if (!u) return; return await saveIntegrations(req, res, match[1], u); }
     if ((match = /^\/api\/templates\/([^/]+)\/preview-docx$/.exec(p)) && m === 'POST') { const u = requireAuth(req, res); if (!u) return; return await previewDocxAdmin(req, res, match[1], u); }
