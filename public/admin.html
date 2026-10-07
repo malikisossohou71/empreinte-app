@@ -86,6 +86,20 @@ canvas{display:block;}
 .link-row{display:flex;gap:8px;align-items:center;}
 .link-row input{flex:1;background:#FBFAF7;color:var(--slate);font-size:12.5px;}
 .link-actions{display:flex;gap:8px;margin-top:10px;}
+/* Interrupteur activer / désactiver un lien public */
+.link-card.disabled{background:#F3F1EC;}
+.link-card.disabled .link-row input{text-decoration:line-through;opacity:.6;}
+.link-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;gap:10px;}
+.link-status{font-size:11.5px;font-weight:600;letter-spacing:.3px;padding:3px 9px;border-radius:20px;background:#E3EFE1;color:#2F6B2A;}
+.link-card.disabled .link-status{background:#EFE0DE;color:var(--danger);}
+.switch{position:relative;display:inline-flex;align-items:center;gap:8px;cursor:pointer;font-size:12.5px;color:var(--slate);user-select:none;}
+.switch input{position:absolute;opacity:0;width:0;height:0;}
+.switch .track{width:36px;height:20px;border-radius:20px;background:#C9C3B6;position:relative;transition:background .15s;flex-shrink:0;}
+.switch .track::after{content:'';position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:transform .15s;box-shadow:0 1px 2px rgba(0,0,0,.25);}
+.switch input:checked + .track{background:var(--brass);}
+.switch input:checked + .track::after{transform:translateX(16px);}
+.switch input:focus-visible + .track{outline:2px solid var(--navy);outline-offset:2px;}
+.switch input:disabled + .track{opacity:.5;cursor:wait;}
 .empty{color:var(--slate);font-size:13.5px;padding:40px 0;}
 .stat-cards{display:flex;gap:16px;margin-bottom:26px;flex-wrap:wrap;}
 .stat-card{background:#fff;border:1px solid var(--line);padding:16px 20px;min-width:140px;}
@@ -1232,14 +1246,43 @@ function renderLinks(){
   if(!current.links.length){ holder.innerHTML = '<p class="empty">Aucun lien publié pour ce modèle. Enregistre d\'abord ton mapping, puis crée un lien.</p>'; return; }
   holder.innerHTML = current.links.map(l=>{
     const url = location.origin + '/form?token=' + l.token;
-    return `<div class="link-card">
+    const active = l.active !== false; // les anciens liens (sans champ "active") sont actifs
+    return `<div class="link-card${active ? '' : ' disabled'}" id="card-${l.id}">
+      <div class="link-head">
+        <span class="link-status">${active ? 'Actif' : 'Désactivé'}</span>
+        <label class="switch" title="${active ? 'Désactiver ce lien' : 'Réactiver ce lien'}">
+          <input type="checkbox" ${active ? 'checked' : ''} onchange="toggleLink('${l.id}', this)">
+          <span class="track"></span>
+          <span>${active ? 'Lien public activé' : 'Lien public désactivé'}</span>
+        </label>
+      </div>
       <div class="link-row"><input type="text" readonly value="${url}" id="link-${l.id}"></div>
       <div class="link-actions">
         <button class="btn btn-dark btn-sm" onclick="copyLink('${l.id}')">Copier</button>
         <a class="btn btn-outline btn-sm" href="${url}" target="_blank" style="text-decoration:none;">Ouvrir</a>
       </div>
+      ${active ? '' : '<p class="ref-prefix-hint" style="margin:10px 0 0;">Les visiteurs qui ouvrent ce lien voient un message indiquant qu\'il est désactivé. Réactive-le pour le remettre en ligne avec la même adresse.</p>'}
     </div>`;
   }).join('');
+}
+
+async function toggleLink(linkId, checkbox){
+  const link = current.links.find(l=>l.id===linkId);
+  if(!link) return;
+  const wanted = checkbox.checked;
+  checkbox.disabled = true;
+  try{
+    const res = await fetch(`/api/templates/${current.id}/links/${linkId}`, {
+      method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ active: wanted })
+    });
+    if(!res.ok) throw new Error((await res.json().catch(()=>({}))).error || 'Erreur');
+    link.active = wanted;
+    showToast(wanted ? 'Lien activé' : 'Lien désactivé');
+  }catch(e){
+    checkbox.checked = !wanted; // la modification n'a pas été enregistrée : on revient à l'état réel
+    showToast("Impossible de modifier le lien");
+  }
+  renderLinks();
 }
 function copyLink(id){
   const input = document.getElementById('link-'+id);
