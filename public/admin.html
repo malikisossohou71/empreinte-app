@@ -92,6 +92,12 @@ canvas{display:block;}
 .link-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;gap:10px;}
 .link-status{font-size:11.5px;font-weight:600;letter-spacing:.3px;padding:3px 9px;border-radius:20px;background:#E3EFE1;color:#2F6B2A;}
 .link-card.disabled .link-status{background:#EFE0DE;color:var(--danger);}
+.slug-row{display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap;}
+.slug-row .prefix{font-size:12.5px;color:var(--slate);}
+.slug-row input{flex:1;min-width:120px;padding:7px 9px;border:1px solid var(--line);border-radius:3px;font-size:13px;}
+.link-sub{font-size:11.5px;color:var(--slate);margin:6px 0 0;}
+.btn-danger-outline{background:#fff;color:var(--danger);border:1px solid var(--danger);}
+.btn-danger-outline:hover{background:var(--danger);color:#fff;}
 .switch{position:relative;display:inline-flex;align-items:center;gap:8px;cursor:pointer;font-size:12.5px;color:var(--slate);user-select:none;}
 .switch input{position:absolute;opacity:0;width:0;height:0;}
 .switch .track{width:36px;height:20px;border-radius:20px;background:#C9C3B6;position:relative;transition:background .15s;flex-shrink:0;}
@@ -1245,7 +1251,8 @@ function renderLinks(){
   const holder = document.getElementById('linksHolder');
   if(!current.links.length){ holder.innerHTML = '<p class="empty">Aucun lien publié pour ce modèle. Enregistre d\'abord ton mapping, puis crée un lien.</p>'; return; }
   holder.innerHTML = current.links.map(l=>{
-    const url = location.origin + '/form?token=' + l.token;
+    const code = l.slug || l.shortCode || null;
+    const url = code ? location.origin + '/p/' + code : location.origin + '/form?token=' + l.token;
     const active = l.active !== false; // les anciens liens (sans champ "active") sont actifs
     return `<div class="link-card${active ? '' : ' disabled'}" id="card-${l.id}">
       <div class="link-head">
@@ -1257,9 +1264,16 @@ function renderLinks(){
         </label>
       </div>
       <div class="link-row"><input type="text" readonly value="${url}" id="link-${l.id}"></div>
+      <p class="link-sub">${l.slug ? 'Lien personnalisé' : 'Lien court'}</p>
+      <div class="slug-row">
+        <span class="prefix">${location.host}/p/</span>
+        <input type="text" id="slug-${l.id}" value="${l.slug || ''}" placeholder="mon-lien-personnalise" maxlength="50" autocomplete="off">
+        <button class="btn btn-outline btn-sm" onclick="saveSlug('${l.id}')">Enregistrer l'alias</button>
+      </div>
       <div class="link-actions">
         <button class="btn btn-dark btn-sm" onclick="copyLink('${l.id}')">Copier</button>
         <a class="btn btn-outline btn-sm" href="${url}" target="_blank" style="text-decoration:none;">Ouvrir</a>
+        <button class="btn btn-danger-outline btn-sm" onclick="deleteLink('${l.id}')">Supprimer</button>
       </div>
       ${active ? '' : '<p class="ref-prefix-hint" style="margin:10px 0 0;">Les visiteurs qui ouvrent ce lien voient un message indiquant qu\'il est désactivé. Réactive-le pour le remettre en ligne avec la même adresse.</p>'}
     </div>`;
@@ -1283,6 +1297,36 @@ async function toggleLink(linkId, checkbox){
     showToast("Impossible de modifier le lien");
   }
   renderLinks();
+}
+async function saveSlug(linkId){
+  const link = current.links.find(l=>l.id===linkId);
+  if(!link) return;
+  const value = document.getElementById('slug-'+linkId).value.trim().toLowerCase();
+  try{
+    const res = await fetch(`/api/templates/${current.id}/links/${linkId}`, {
+      method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ slug: value })
+    });
+    const data = await res.json().catch(()=>({}));
+    if(!res.ok) throw new Error(data.error || 'Erreur');
+    link.slug = data.slug || null;
+    showToast(link.slug ? 'Alias enregistré' : 'Alias supprimé (lien court rétabli)');
+    renderLinks();
+  }catch(e){
+    showToast(e.message || "Impossible d'enregistrer l'alias");
+  }
+}
+async function deleteLink(linkId){
+  if(!confirm("Supprimer définitivement ce lien public ?\n\nL'adresse cessera immédiatement de fonctionner pour tous ceux qui la possèdent. Cette action est irréversible.\n(Pour une pause temporaire, utilise plutôt l'interrupteur « Lien public activé ».)")) return;
+  try{
+    const res = await fetch(`/api/templates/${current.id}/links/${linkId}`, { method:'DELETE' });
+    if(!res.ok) throw new Error((await res.json().catch(()=>({}))).error || 'Erreur');
+    current.links = current.links.filter(l=>l.id!==linkId);
+    await loadTemplates();
+    renderLinks();
+    showToast('Lien supprimé');
+  }catch(e){
+    showToast("Impossible de supprimer le lien");
+  }
 }
 function copyLink(id){
   const input = document.getElementById('link-'+id);
