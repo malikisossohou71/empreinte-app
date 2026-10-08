@@ -88,7 +88,9 @@ let form = null; // { template, fields }
 let templateImg = null;
 let values = {}; // fieldId -> string | {imgObj}
 
-const token = new URLSearchParams(location.search).get('token');
+// Le code du lien peut venir de /p/mon-alias, /p/k3x9ab ou de l'ancien format /form?token=...
+const pathMatch = /^\/p\/([^/]+)\/?$/.exec(location.pathname);
+const token = pathMatch ? decodeURIComponent(pathMatch[1]) : new URLSearchParams(location.search).get('token');
 
 async function init(){
   if(!token){ document.getElementById('tplName').textContent = 'Lien indisponible'; document.getElementById('stateMsg').textContent = "Lien invalide : aucun jeton fourni."; return; }
