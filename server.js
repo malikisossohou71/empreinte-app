@@ -8,6 +8,7 @@ const db = require('./lib/db');
 const auth = require('./lib/auth');
 const mailer = require('./lib/mailer');
 const fontsLib = require('./lib/fonts');
+const linksLib = require('./lib/links');
 const { renderPng, pngToJpeg, pngToPdf } = require('./lib/render');
 const { analyzePsd } = require('./lib/psd');
 const { extractFields: extractDocxFields, renderDocx } = require('./lib/docx_render');
@@ -130,7 +131,7 @@ const LINK_DISABLED_MSG = "Ce lien a été désactivé par son propriétaire.";
 function sendLinkDisabled(res) { return sendJson(res, 403, { error: LINK_DISABLED_MSG, disabled: true }); }
 
 function registerView(req, res, token) {
-  const link = db.find('public_links', l => l.token === token);
+  const link = linksLib.findByCode(token);
   if (!link) return sendJson(res, 404, { error: 'Lien introuvable' });
   if (!isLinkActive(link)) return sendLinkDisabled(res);
   db.update('public_links', link.id, { views: (link.views || 0) + 1 });
@@ -540,7 +541,7 @@ function publishLink(req, res, templateId, user) {
   const template = db.find('templates', t => t.id === templateId);
   if (!template) return sendJson(res, 404, { error: 'Modèle introuvable' });
   if (template.ownerId !== user.id) return sendJson(res, 403, { error: 'Accès refusé' });
-  const link = { id: id(), templateId, token: crypto.randomBytes(6).toString('hex'), active: true, createdAt: new Date().toISOString() };
+  const link = { id: id(), templateId, token: crypto.randomBytes(6).toString('hex'), shortCode: linksLib.generateShortCode(), slug: null, active: true, createdAt: new Date().toISOString() };
   db.insert('public_links', link);
   sendJson(res, 201, link);
 }
@@ -554,13 +555,44 @@ async function setLinkActive(req, res, templateId, linkId, user) {
   const link = db.find('public_links', l => l.id === linkId && l.templateId === templateId);
   if (!link) return sendJson(res, 404, { error: 'Lien introuvable' });
   const body = await readJsonBody(req);
-  if (typeof body.active !== 'boolean') return sendJson(res, 400, { error: 'Le champ "active" (true/false) est requis.' });
-  db.update('public_links', link.id, { active: body.active });
-  sendJson(res, 200, { ...link, active: body.active });
+  const patch = {};
+
+  // Activation / désactivation (optionnel)
+  if (body.active !== undefined) {
+    if (typeof body.active !== 'boolean') return sendJson(res, 400, { error: 'Le champ "active" doit être true ou false.' });
+    patch.active = body.active;
+  }
+
+  // Alias personnalisé (optionnel). Une valeur vide supprime l'alias.
+  if (body.slug !== undefined) {
+    if (body.slug === null || String(body.slug).trim() === '') {
+      patch.slug = null;
+    } else {
+      const check = linksLib.validateSlug(body.slug, link.id);
+      if (!check.ok) return sendJson(res, 400, { error: check.error });
+      patch.slug = check.slug;
+    }
+  }
+
+  if (!Object.keys(patch).length) return sendJson(res, 400, { error: 'Rien à modifier : fournis "active" et/ou "slug".' });
+  const updated = db.update('public_links', link.id, patch);
+  sendJson(res, 200, updated);
+}
+
+// Suppression définitive d'un lien public : l'adresse cesse immédiatement de fonctionner
+// (les visiteurs voient "introuvable"). Les documents déjà générés via ce lien sont conservés.
+function deleteLink(req, res, templateId, linkId, user) {
+  const template = db.find('templates', t => t.id === templateId);
+  if (!template) return sendJson(res, 404, { error: 'Modèle introuvable' });
+  if (template.ownerId !== user.id) return sendJson(res, 403, { error: 'Accès refusé' });
+  const link = db.find('public_links', l => l.id === linkId && l.templateId === templateId);
+  if (!link) return sendJson(res, 404, { error: 'Lien introuvable' });
+  db.replaceWhere('public_links', l => l.id === linkId, []);
+  sendJson(res, 200, { ok: true });
 }
 
 function getPublicForm(req, res, token) {
-  const link = db.find('public_links', l => l.token === token);
+  const link = linksLib.findByCode(token);
   if (!link) return sendJson(res, 404, { error: 'Lien introuvable ou expiré' });
   if (!isLinkActive(link)) return sendLinkDisabled(res);
   const template = db.find('templates', t => t.id === link.templateId);
@@ -642,7 +674,7 @@ async function buildRender(templateId, fields, values, options = {}) {
 }
 
 async function previewPublic(req, res, token) {
-  const link = db.find('public_links', l => l.token === token);
+  const link = linksLib.findByCode(token);
   if (!link) return sendJson(res, 404, { error: 'Lien introuvable' });
   if (!isLinkActive(link)) return sendLinkDisabled(res);
   const template = db.find('templates', t => t.id === link.templateId);
@@ -672,7 +704,7 @@ async function previewPublic(req, res, token) {
 }
 
 async function submitPublic(req, res, token) {
-  const link = db.find('public_links', l => l.token === token);
+  const link = linksLib.findByCode(token);
   if (!link) return sendJson(res, 404, { error: 'Lien introuvable ou expiré' });
   if (!isLinkActive(link)) return sendLinkDisabled(res);
   const template = db.find('templates', t => t.id === link.templateId);
@@ -882,6 +914,7 @@ const server = http.createServer(async (req, res) => {
     if ((match = /^\/api\/templates\/([^/]+)\/fields$/.exec(p)) && m === 'PUT') { const u = requireAuth(req, res); if (!u) return; return await saveFields(req, res, match[1], u); }
     if ((match = /^\/api\/templates\/([^/]+)\/publish$/.exec(p)) && m === 'POST') { const u = requireAuth(req, res); if (!u) return; return publishLink(req, res, match[1], u); }
     if ((match = /^\/api\/templates\/([^/]+)\/links\/([^/]+)$/.exec(p)) && m === 'PUT') { const u = requireAuth(req, res); if (!u) return; return await setLinkActive(req, res, match[1], match[2], u); }
+    if ((match = /^\/api\/templates\/([^/]+)\/links\/([^/]+)$/.exec(p)) && m === 'DELETE') { const u = requireAuth(req, res); if (!u) return; return deleteLink(req, res, match[1], match[2], u); }
     if ((match = /^\/api\/templates\/([^/]+)\/branding$/.exec(p)) && m === 'PUT') { const u = requireAuth(req, res); if (!u) return; return await saveBranding(req, res, match[1], u); }
     if ((match = /^\/api\/templates\/([^/]+)\/integrations$/.exec(p)) && m === 'PUT') { const u = requireAuth(req, res); if (!u) return; return await saveIntegrations(req, res, match[1], u); }
     if ((match = /^\/api\/templates\/([^/]+)\/preview-docx$/.exec(p)) && m === 'POST') { const u = requireAuth(req, res); if (!u) return; return await previewDocxAdmin(req, res, match[1], u); }
@@ -911,6 +944,8 @@ const server = http.createServer(async (req, res) => {
     // ---- Static frontend ----
     if (p === '/' || p === '/admin') return serveStatic(req, res, path.join(ROOT, 'public', 'admin.html'));
     if (p === '/form') return serveStatic(req, res, path.join(ROOT, 'public', 'form.html'));
+    // Lien court / personnalisé : /p/mon-alias ou /p/k3x9ab (la page lit le code dans l'adresse)
+    if (/^\/p\/[^/]+\/?$/.test(p)) return serveStatic(req, res, path.join(ROOT, 'public', 'form.html'));
     if (p.startsWith('/public-assets/')) return serveStatic(req, res, path.join(ROOT, 'public', p.replace('/public-assets/', '')));
 
     sendJson(res, 404, { error: 'Route introuvable' });
@@ -921,6 +956,8 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
+  const filled = linksLib.backfillShortCodes();
+  if (filled) console.log(`${filled} ancien(s) lien(s) public(s) ont reçu un code court.`);
   console.log(`Empreinte MVP démarré : http://localhost:${PORT}/admin`);
   // Diagnostic utile après un déploiement : si ce nombre de comptes retombe à 0
   // à chaque redémarrage alors que tu en as déjà créé, c'est que le dossier
