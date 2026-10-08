@@ -82,6 +82,11 @@ canvas{display:block;}
 .ref-prefix-hint{font-size:11.5px;color:var(--slate);}
 .swatch{width:22px;height:22px;border-radius:50%;cursor:pointer;border:2px solid transparent;}
 .swatch.active{border-color:var(--navy);}
+.color-custom{display:flex;align-items:center;gap:8px;margin-top:10px;}
+.inspector-row .color-custom input[type=color]{width:44px;height:34px;padding:2px;flex:none;cursor:pointer;background:#fff;}
+.inspector-row .color-custom input[type=text]{flex:1;min-width:0;font-family:monospace;text-transform:uppercase;letter-spacing:.5px;}
+.inspector-row .color-custom input[type=text].invalid{border-color:var(--danger);background:#FDF3F2;}
+.color-custom-label{font-size:11px;color:var(--slate);margin-top:5px;}
 .link-card{background:#fff;border:1px solid var(--line);padding:16px 18px;max-width:520px;margin-bottom:12px;}
 .link-row{display:flex;gap:8px;align-items:center;}
 .link-row input{flex:1;background:#FBFAF7;color:var(--slate);font-size:12.5px;}
@@ -358,6 +363,15 @@ table.subs th{color:var(--slate);font-weight:500;font-size:11.5px;}
 <script>
 const COLORS = ['#23262F','#B8862B','#A6423B','#3E6B4F','#1B2340'];
 
+// Normalise une saisie de couleur : accepte "#abc", "abc", "#AABBCC", "aabbcc"
+// et renvoie toujours "#RRGGBB" en majuscules (ou null si la saisie est invalide).
+function normalizeHex(v){
+  let h = String(v||'').trim().replace(/^#/,'');
+  if(/^[0-9a-fA-F]{3}$/.test(h)) h = h.split('').map(c=>c+c).join('');
+  if(!/^[0-9a-fA-F]{6}$/.test(h)) return null;
+  return '#'+h.toUpperCase();
+}
+
 // Portion de l'inspecteur qui dépend du TYPE de champ (texte / image / QR),
 // partagée entre l'éditeur d'images/PSD et l'éditeur de champs positionnés Word.
 function fieldTypeSpecificInspectorHtml(f, prefix){
@@ -387,6 +401,7 @@ function fieldTypeSpecificInspectorHtml(f, prefix){
   }
   // texte (et référence, qui partage les mêmes contrôles de mise en forme)
   const fontOptions = WEB_SAFE_FONTS.map(name=>`<option value="${name}" ${f.fontFamily===name?'selected':''}>${name}</option>`).join('');
+  const curColor = normalizeHex(f.color) || '#23262F';
   const customOptions = customFonts.map(cf=>`<option value="${escapeHtml(cf.family)}" ${f.fontFamily===cf.family?'selected':''}>${escapeHtml(cf.family)} (perso)</option>`).join('');
   return `<div class="inspector-row">
       <label>Police</label>
@@ -416,7 +431,14 @@ function fieldTypeSpecificInspectorHtml(f, prefix){
         <label><input type="checkbox" id="${prefix}-underline" ${f.underline?'checked':''}> Souligné</label>
       </div>
     </div>
-    <div class="inspector-row"><label>Couleur</label><div class="swatches">${COLORS.map(c=>`<span class="swatch ${f.color===c?'active':''}" style="background:${c}" data-c="${c}"></span>`).join('')}</div></div>`;
+    <div class="inspector-row"><label>Couleur</label>
+      <div class="swatches">${COLORS.map(c=>`<span class="swatch ${curColor===c?'active':''}" style="background:${c}" data-c="${c}" title="${c}"></span>`).join('')}</div>
+      <div class="color-custom">
+        <input type="color" id="${prefix}-color-picker" value="${curColor.toLowerCase()}" title="Ouvrir le nuancier">
+        <input type="text" id="${prefix}-color-hex" value="${curColor}" maxlength="7" placeholder="#RRGGBB" spellcheck="false" autocomplete="off">
+      </div>
+      <div class="color-custom-label">Choisis une couleur dans le nuancier ou saisis un code hexadécimal.</div>
+    </div>`;
 }
 
 function wireFieldTypeSpecificInspector(holder, f, prefix, rerenderInspector, redrawOnly, canvasW, canvasH){
@@ -425,6 +447,25 @@ function wireFieldTypeSpecificInspector(holder, f, prefix, rerenderInspector, re
   const alignInput = holder.querySelector('#'+prefix+'-align');
   if(alignInput) alignInput.onchange = e=>{ f.align=e.target.value; redrawOnly(); };
   holder.querySelectorAll('.swatch').forEach(sw=>sw.onclick=()=>{ f.color=sw.dataset.c; rerenderInspector(); });
+  const colorPicker = holder.querySelector('#'+prefix+'-color-picker');
+  const colorHex = holder.querySelector('#'+prefix+'-color-hex');
+  if(colorPicker && colorHex){
+    // Met à jour tous les contrôles de couleur sans reconstruire l'inspecteur
+    // (sinon le nuancier se fermerait pendant qu'on le manipule).
+    const syncColorUI = (skip)=>{
+      const c = normalizeHex(f.color) || '#23262F';
+      if(skip!=='picker') colorPicker.value = c.toLowerCase();
+      if(skip!=='hex'){ colorHex.value = c; colorHex.classList.remove('invalid'); }
+      holder.querySelectorAll('.swatch').forEach(sw=>sw.classList.toggle('active', sw.dataset.c.toUpperCase()===c));
+    };
+    colorPicker.oninput = e=>{ f.color = normalizeHex(e.target.value); syncColorUI('picker'); redrawOnly(); };
+    colorHex.oninput = e=>{
+      const n = normalizeHex(e.target.value);
+      if(!n){ colorHex.classList.add('invalid'); return; }
+      f.color = n; syncColorUI('hex'); redrawOnly();
+    };
+    colorHex.onblur = ()=>syncColorUI();
+  }
   const shapeInput = holder.querySelector('#'+prefix+'-shape');
   if(shapeInput) shapeInput.onchange = e=>{ f.shape=e.target.value; redrawOnly(); };
   const fontInput = holder.querySelector('#'+prefix+'-font');
